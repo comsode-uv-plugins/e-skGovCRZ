@@ -1,20 +1,13 @@
 package eu.comsode.unifiedviews.plugins.extractor.skgovcrz;
 
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.io.PrintWriter;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
-import java.nio.charset.Charset;
-import java.nio.charset.CharsetEncoder;
-import java.nio.charset.CodingErrorAction;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.http.Header;
@@ -29,17 +22,21 @@ import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
+import org.openrdf.model.ValueFactory;
+import org.openrdf.model.impl.ValueFactoryImpl;
+import org.openrdf.model.vocabulary.RDF;
+import org.openrdf.repository.RepositoryConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import eu.unifiedviews.dataunit.DataUnit;
-import eu.unifiedviews.dataunit.DataUnitException;
-import eu.unifiedviews.dataunit.files.WritableFilesDataUnit;
+import eu.unifiedviews.dataunit.rdf.WritableRDFDataUnit;
 import eu.unifiedviews.dpu.DPU;
 import eu.unifiedviews.dpu.DPUException;
 import eu.unifiedviews.helpers.dpu.config.ConfigHistory;
 import eu.unifiedviews.helpers.dpu.context.ContextUtils;
 import eu.unifiedviews.helpers.dpu.exec.AbstractDpu;
+import eu.unifiedviews.helpers.dpu.rdf.EntityBuilder;
 
 /**
  * Main data processing unit class.
@@ -51,18 +48,18 @@ public class SkGovCRZ extends AbstractDpu<SkGovCRZConfig_V1> {
 
     private static final String INPUT_URL = "http://www.crz.gov.sk/";
 
-    private static final String defaultPath = "/index.php";
+    private static final String BASE_URI = "http://localhost/";
 
-    private static final String CSV_HEADER = "\"Názov zmluvy\";\"Typ zmluvy\";\"Rezort\";\"Objednávate¾\";\"Dodávate¾\";\"IÈO\""
-            + ";\"Èíslo zmluvy\";\"Dátum zverejnenia\";\"Dátum uzavretia\";\"Dátum úèinnosti\";\"Dátum platnosti do\""
-            + ";\"Celková èiastka\";\"Príloha\";\"Detail\"";
+    private static final String PURL_URI = "http://purl.org/procurement/public-contracts#";
+
+    private static final String defaultPath = "/index.php";
 
     private String sessionId = null;
 
-    private Map<String, String> keys = new HashMap<String, String>();
+    private Map<String, Integer> keys = new HashMap<String, Integer>();
 
-    @DataUnit.AsOutput(name = "filesOutput")
-    public WritableFilesDataUnit filesOutput;
+    @DataUnit.AsOutput(name = "rdfOutput")
+    public WritableRDFDataUnit rdfOutput;
 
     public SkGovCRZ() {
         super(SkGovCRZVaadinDialog.class, ConfigHistory.noHistory(SkGovCRZConfig_V1.class));
@@ -70,21 +67,14 @@ public class SkGovCRZ extends AbstractDpu<SkGovCRZConfig_V1> {
 
     @Override
     protected void innerExecute() throws DPUException {
-        File outputFile = null;
         initializeKeysMap();
-        try {
-            outputFile = File.createTempFile("____", ".csv", new File(URI.create(filesOutput.getBaseFileURIString())));
-        } catch (IOException | DataUnitException ex) {
-            throw ContextUtils.dpuException(ctx, ex, "SkMartinDebtors.execute.exception");
-        }
-
-        CharsetEncoder encoder = Charset.forName("UTF-8").newEncoder();
-        encoder.onMalformedInput(CodingErrorAction.REPORT);
-        encoder.onUnmappableCharacter(CodingErrorAction.REPORT);
+        RepositoryConnection connection = null;
         int pageCounter = 0;
-        try (PrintWriter outputWriter = new PrintWriter(new BufferedWriter(new OutputStreamWriter(new FileOutputStream(outputFile, false), encoder))); CloseableHttpClient httpclient = HttpClients.createDefault()) {
+        try (CloseableHttpClient httpclient = HttpClients.createDefault()) {
+            org.openrdf.model.URI graph = rdfOutput.addNewDataGraph("skGovCRZRdfData");
+            connection = rdfOutput.getConnection();
+            ValueFactory vf = ValueFactoryImpl.getInstance();
 
-            outputWriter.println(CSV_HEADER);
             HttpGet httpGet = new HttpGet(INPUT_URL);
             httpGet.setHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
             httpGet.setHeader("Accept-Encoding", "gzip, deflate");
@@ -135,7 +125,7 @@ public class SkGovCRZ extends AbstractDpu<SkGovCRZConfig_V1> {
             builder.setPath(defaultPath);
             builder.setParameter(idKeyName, idValue);
             builder.setParameter("page", Integer.toString(pageCounter));
-            int counter = 0;
+            int contractCounter = 0;
             while (true) {
                 response = getDetailInfo(httpclient, builder.build());
                 LOG.debug(String.format("Server response:\n%s", response));
@@ -153,22 +143,23 @@ public class SkGovCRZ extends AbstractDpu<SkGovCRZConfig_V1> {
                         continue;
                     }
                     Element td = tr.select("td.cell2").first();
-                    URIBuilder defaultLinkBuilder = new URIBuilder();
-                    defaultLinkBuilder.setScheme(url.getProtocol());
-                    defaultLinkBuilder.setHost(url.getHost());
-                    defaultLinkBuilder.setPath(defaultPath);
-                    for (Map.Entry<String, String> parameter : parseQuery(td.select("a[href]").first().attr("href")).entrySet()) {
-                        defaultLinkBuilder.setParameter(parameter.getKey(), parameter.getValue());
-                    }
-                    String zmluvaDetail = getDetailInfo(httpclient, defaultLinkBuilder.build());
+                    URI detailURI = buildUri(url, td.select("a[href]").first().attr("href"));
+                    String zmluvaDetail = getDetailInfo(httpclient, detailURI);
                     Element zmluvaDetailContent = Jsoup.parse(zmluvaDetail);
                     LOG.debug(zmluvaDetailContent.html());
                     Element detailContent = zmluvaDetailContent.select("div#content").first();
-                    getDetails(detailContent, url);
-                    keys.put("Detail", defaultLinkBuilder.build().toString());
-                    outputWriter.println(buildCsvRow());
-                    counter++;
-                    LOG.info("Done contract {}", counter);
+
+                    UUID uuid = UUID.randomUUID();
+                    org.openrdf.model.URI uri = vf.createURI(BASE_URI + uuid.toString());
+                    EntityBuilder eb = new EntityBuilder(uri, vf);
+                    eb.property(RDF.TYPE, vf.createURI(PURL_URI));
+                    eb.property(vf.createURI(BASE_URI + "linka-na-detail"), detailURI.toString());
+                    eb = getDetails(detailContent, eb, vf, httpclient, url);
+                    keys.put("linka-na-detail", keys.get("linka-na-detail") + 1);
+
+                    connection.add(eb.asStatements(), graph);
+                    contractCounter++;
+                    LOG.debug("Number of scrapped projects: " + Integer.toString(contractCounter));
                 }
                 pageCounter++;
                 builder = new URIBuilder();
@@ -232,65 +223,62 @@ public class SkGovCRZ extends AbstractDpu<SkGovCRZConfig_V1> {
         return responseDoc;
     }
 
-    private void getDetails(Element detail, URL url) throws Exception {
+    private EntityBuilder getDetails(Element detail, EntityBuilder eb, ValueFactory vf, CloseableHttpClient httpClient, URL url) throws Exception {
         initializeKeysMap();
         Element divDates = detail.select("div.area1").first();
         Element datesTable = divDates.select("table").first();
         Elements datesTrs = datesTable.select("tr");
         for (Element tr : datesTrs) {
-            String key = tr.select("th").first().text().replaceAll(":", "");
+            String key = slugify(tr.select("th").first().text());
             String value = tr.select("td").first().text();
             if (keys.containsKey(key)) {
-                keys.put(key, value);
+                keys.put(key, keys.get(key) + 1);
             } else {
                 LOG.warn("Invalid key: " + key);
             }
+            eb.property(vf.createURI(BASE_URI + key), value);
         }
         Element divPriloha = detail.select("div.area2").first();
         if (divPriloha != null) {
-            String prilohaKey = divPriloha.select("h2").first().text().replaceAll(":", "");
+            String prilohaKey = slugify(divPriloha.select("h2").first().text());
             Elements prilohy = divPriloha.select("a[href]");
-            if (prilohy.size() > 1) {
-                LOG.error(String.format("Zmluva contains more (%d) Priloha than expected!", prilohy.size()));
-            } else if (prilohy.size() == 0) {
-                if (keys.containsKey(prilohaKey)) {
-                    keys.put(prilohaKey, "");
-                } else {
-                    LOG.warn("Invalid key: " + prilohaKey);
-                }
-            } else {
-                String prilohaValue = prilohy.first().attr("href");
+            for (Element priloha : prilohy) {
+                String prilohaValue = priloha.attr("href");
                 URI prilohaLink = buildUri(url, prilohaValue);
                 if (keys.containsKey(prilohaKey)) {
-                    keys.put(prilohaKey, prilohaLink.toString());
+                    keys.put(prilohaKey, keys.get(prilohaKey) + 1);
                 } else {
                     LOG.warn("Invalid key: " + prilohaKey);
                 }
+                eb.property(vf.createURI(BASE_URI + prilohaKey), prilohaLink.toString());
             }
         } else {
-            LOG.warn("There is no Prilaha in this Zmluva!");
+            LOG.warn("There is no attachment to this contract!");
         }
         Element divIdent = detail.select("div.area3").first();
         Element identTable = divIdent.select("table").first();
         Elements identTrs = identTable.select("tr");
         for (Element tr : identTrs) {
-            String key = tr.select("th").first().text().replaceAll(":", "");
+            String key = slugify(tr.select("th").first().text());
             String value = tr.select("td").first().text();
             if (keys.containsKey(key)) {
-                keys.put(key, value);
+                keys.put(key, keys.get(key) + 1);
             } else {
                 LOG.warn("Invalid key: " + key);
             }
+            eb.property(vf.createURI(BASE_URI + key), value);
         }
         Element divCena = detail.select("div.area4").first();
         Element divCelkCena = divCena.select("div.last").first();
-        String cenaKey = divCelkCena.select("strong").first().text().replaceAll(":", "");
+        String cenaKey = slugify(divCelkCena.select("strong").first().text());
         String cenaValue = divCelkCena.select("span").first().text();
         if (keys.containsKey(cenaKey)) {
-            keys.put(cenaKey, normalizeSum(cenaValue));
+            keys.put(cenaKey, keys.get(cenaKey) + 1);
         } else {
             LOG.warn("Invalid key: " + cenaKey);
         }
+        eb.property(vf.createURI(BASE_URI + cenaKey), normalizeSum(cenaValue));
+        return eb;
     }
 
     private Map<String, String> parseQuery(String queryString) {
@@ -313,20 +301,20 @@ public class SkGovCRZ extends AbstractDpu<SkGovCRZConfig_V1> {
     }
 
     private void initializeKeysMap() {
-        keys.put("Názov zmluvy", "");
-        keys.put("Typ", "");
-        keys.put("Rezort", "");
-        keys.put("Objednávate¾", "");
-        keys.put("Dodávate¾", "");
-        keys.put("IÈO", "");
-        keys.put("Èíslo zmluvy", "");
-        keys.put("Dátum zverejnenia", "");
-        keys.put("Dátum uzavretia", "");
-        keys.put("Dátum úèinnosti", "");
-        keys.put("Dátum platnosti do", "");
-        keys.put("Celková èiastka", "");
-        keys.put("Príloha", "");
-        keys.put("Detail", "");
+        keys.put("nazov-zmluvy", 0);
+        keys.put("typ", 0);
+        keys.put("rezort", 0);
+        keys.put("objednavatel", 0);
+        keys.put("dodavatel", 0);
+        keys.put("ico", 0);
+        keys.put("cislo-zmluvy", 0);
+        keys.put("datum-zverejnenia", 0);
+        keys.put("datum-uzavretia", 0);
+        keys.put("datum-ucinnosti", 0);
+        keys.put("datum-platnosti-do", 0);
+        keys.put("celkova-ciastka", 0);
+        keys.put("priloha", 0);
+        keys.put("linka-na-detail", 0);
     }
 
     private URI buildUri(URL url, String params) {
@@ -346,22 +334,13 @@ public class SkGovCRZ extends AbstractDpu<SkGovCRZConfig_V1> {
         return result;
     }
 
-    private String buildCsvRow() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("\"").append(keys.get("Názov zmluvy")).append("\";");
-        sb.append("\"").append(keys.get("Typ")).append("\";");
-        sb.append("\"").append(keys.get("Rezort")).append("\";");
-        sb.append("\"").append(keys.get("Objednávate¾")).append("\";");
-        sb.append("\"").append(keys.get("Dodávate¾")).append("\";");
-        sb.append("\"").append(keys.get("IÈO")).append("\";");
-        sb.append("\"").append(keys.get("Èíslo zmluvy")).append("\";");
-        sb.append("\"").append(keys.get("Dátum zverejnenia")).append("\";");
-        sb.append("\"").append(keys.get("Dátum uzavretia")).append("\";");
-        sb.append("\"").append(keys.get("Dátum úèinnosti")).append("\";");
-        sb.append("\"").append(keys.get("Dátum platnosti do")).append("\";");
-        sb.append("\"").append(keys.get("Celková èiastka")).append("\";");
-        sb.append("\"").append(keys.get("Príloha")).append("\";");
-        sb.append("\"").append(keys.get("Detail")).append("\"");
-        return sb.toString();
+    private static String slugify(String input) {
+        String result = StringUtils.stripAccents(input);
+        result = StringUtils.lowerCase(result).trim();
+        result = result.replaceAll("[^a-zA-Z0-9\\s]", "");
+        result = result.replaceAll("\\b\\s+", "-");
+        return result;
+
     }
+
 }
