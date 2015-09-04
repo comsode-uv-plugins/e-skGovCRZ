@@ -8,6 +8,8 @@ import eu.unifiedviews.helpers.dpu.vaadin.dialog.AbstractDialog;
  */
 public class SkGovCRZVaadinDialog extends AbstractDialog<SkGovCRZConfig_V1> {
 
+    private static final long serialVersionUID = 5654427105244031516L;
+
     public SkGovCRZVaadinDialog() {
         super(SkGovCRZ.class);
     }

@@ -44,11 +44,11 @@
 			<scope>provided</scope>
 		</dependency>
 		<dependency>
-      		<!-- jsoup HTML parser library @ http://jsoup.org/ -->
-      		<groupId>org.jsoup</groupId>
-      		<artifactId>jsoup</artifactId>
-      		<version>1.8.2</version>
-    	</dependency>
+			<!-- jsoup HTML parser library @ http://jsoup.org/ -->
+			<groupId>org.jsoup</groupId>
+			<artifactId>jsoup</artifactId>
+			<version>1.8.2</version>
+		</dependency>
 		<!-- UNIT Test dependencies. -->
 		<dependency>
 			<groupId>junit</groupId>
@@ -60,6 +60,11 @@
 			<groupId>eu.unifiedviews</groupId>
 			<artifactId>module-test</artifactId>
 			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.commons</groupId>
+			<artifactId>commons-lang3</artifactId>
+			<version>3.1</version>
 		</dependency>
 	</dependencies>
 
