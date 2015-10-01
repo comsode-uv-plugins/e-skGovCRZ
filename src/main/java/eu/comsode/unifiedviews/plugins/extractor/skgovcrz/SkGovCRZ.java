@@ -159,7 +159,7 @@ public class SkGovCRZ extends AbstractDpu<SkGovCRZConfig_V1> {
 
                     connection.add(eb.asStatements(), graph);
                     contractCounter++;
-                    LOG.debug("Number of scrapped projects: " + Integer.toString(contractCounter));
+                    LOG.debug("Number of scrapped contracts: " + Integer.toString(contractCounter));
                 }
                 pageCounter++;
                 builder = new URIBuilder();
@@ -167,7 +167,7 @@ public class SkGovCRZ extends AbstractDpu<SkGovCRZConfig_V1> {
             }
 
         } catch (Exception ex) {
-            throw ContextUtils.dpuException(ctx, ex, "SkMartinContracts.execute.exception");
+            throw ContextUtils.dpuException(ctx, ex, "SkGovCRZ.execute.exception");
         }
 
     }
@@ -315,6 +315,9 @@ public class SkGovCRZ extends AbstractDpu<SkGovCRZConfig_V1> {
         keys.put("celkova-ciastka", 0);
         keys.put("priloha", 0);
         keys.put("linka-na-detail", 0);
+        keys.put("popis-zmluvy", 0);
+        keys.put("posledna-zmena", 0);
+        keys.put("poznamka", 0);
     }
 
     private URI buildUri(URL url, String params) {
